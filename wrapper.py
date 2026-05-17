@@ -41,6 +41,8 @@ def load_config():
 
 # ── Preview text ────────────────────────────────────────────────────
 
+# (internal helper — see _build_preview)
+
 def _build_preview(tool_name: str, description: str, inp: dict) -> str:
     """Build human-readable preview text for the zenity dialog."""
     lines = []
@@ -112,35 +114,25 @@ OPTION_DENY = "拒绝"
 
 def show_notify(preview_text: str, has_suggestions: bool) -> str | None:
     """
-    Pop up a zenity radiolist dialog with three options.
-    Returns one of the OPTION_* constants, or None if cancelled.
-    """
-    options = [OPTION_ALLOW_ONCE, OPTION_DENY]
-    if has_suggestions:
-        options.insert(1, OPTION_ALWAYS)  # 始终允许 放中间
+    Pop up a zenity question dialog with three custom buttons:
+      [允许本次] [始终允许] [拒绝]
+    Default button is "允许本次" (OK, return code 0).
 
-    # Build zenity args
-    # Format: --list --radiolist with columns
+    Returns one of the OPTION_* constants, or None if closed.
+    """
+    # Build args: --question with three labelled buttons
     args = [
         "zenity",
-        "--list", "--radiolist",
+        "--question",
         "--title=cc-notify",
         f"--text={preview_text}",
-        "--column=", "--column=操作",
-        "--width=600", "--height=380",
-        "--ok-label=确认",
-        "--cancel-label=关闭",
-        "--hide-column=1",
-        "--print-column=2",
+        "--ok-label=允许本次",
+        "--cancel-label=拒绝",
+        "--width=600",
         "--no-markup",
     ]
-
-    # Add options. First one (允许本次) is pre-selected and marked with ▶.
-    for i, opt in enumerate(options):
-        selected = "TRUE" if i == 0 else "FALSE"
-        label = f"▶ {opt}" if i == 0 else f"    {opt}"
-        args.append(selected)
-        args.append(label)
+    if has_suggestions:
+        args.append("--extra-button=始终允许")
 
     try:
         proc = subprocess.run(
@@ -149,14 +141,16 @@ def show_notify(preview_text: str, has_suggestions: bool) -> str | None:
             text=True,
             timeout=300,
         )
-        if proc.returncode == 0:
-            choice = proc.stdout.strip()
-            # Strip "▶ " prefix if present
-            if choice.startswith("▶ "):
-                choice = choice[2:]
-            choice = choice.strip()
-            if choice in (OPTION_ALLOW_ONCE, OPTION_ALWAYS, OPTION_DENY):
-                return choice
+        rc = proc.returncode
+        extra = proc.stdout.strip()
+
+        if rc == 0:
+            return OPTION_ALLOW_ONCE
+        elif extra == OPTION_ALWAYS:
+            return OPTION_ALWAYS
+        else:
+            # Cancel button (拒绝) or window closed
+            return OPTION_DENY
     except (subprocess.TimeoutExpired, FileNotFoundError):
         pass
     return None
