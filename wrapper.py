@@ -135,11 +135,12 @@ def show_notify(preview_text: str, has_suggestions: bool) -> str | None:
         "--no-markup",
     ]
 
-    # Add options. First one (允许本次) is pre-selected (TRUE).
+    # Add options. First one (允许本次) is pre-selected and marked with ▶.
     for i, opt in enumerate(options):
         selected = "TRUE" if i == 0 else "FALSE"
+        label = f"▶ {opt}" if i == 0 else f"    {opt}"
         args.append(selected)
-        args.append(opt)
+        args.append(label)
 
     try:
         proc = subprocess.run(
@@ -150,6 +151,10 @@ def show_notify(preview_text: str, has_suggestions: bool) -> str | None:
         )
         if proc.returncode == 0:
             choice = proc.stdout.strip()
+            # Strip "▶ " prefix if present
+            if choice.startswith("▶ "):
+                choice = choice[2:]
+            choice = choice.strip()
             if choice in (OPTION_ALLOW_ONCE, OPTION_ALWAYS, OPTION_DENY):
                 return choice
     except (subprocess.TimeoutExpired, FileNotFoundError):
