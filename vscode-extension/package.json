@@ -2,7 +2,7 @@
   "name": "cc-notify",
   "displayName": "cc-notify — Claude Code 桌面通知",
   "description": "Claude Code 确认弹窗通知，切屏不误事。自动拦截权限请求并弹出桌面三按钮对话框。",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publisher": "maomao1029",
   "license": "MIT",
   "icon": "icon.png",
