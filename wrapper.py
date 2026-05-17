@@ -2,8 +2,10 @@
 """
 cc-notify wrapper - 代理 VS Code 扩展与 Claude 之间的 JSON 通信。
 
-拦截 can_use_tool 确认请求，弹出 zenity 对话框。
-用户点击 Allow/Deny 后注入正确的 JSON 回复。
+拦截 can_use_tool 确认请求，弹出 zenity 三选一对话框：
+  - 允许本次 (Allow once)
+  - 始终允许 (Always allow)
+  - 拒绝 (Deny)
 
 用法（由包装器脚本自动调用）:
     wrapper.py <claude-real-binary-path> [args...]
@@ -14,6 +16,7 @@ import os
 import select
 import subprocess
 import sys
+import textwrap
 import threading
 import time
 from pathlib import Path
@@ -36,43 +39,119 @@ def load_config():
     return DEFAULT_CONFIG
 
 
-# ── Zenity ──────────────────────────────────────────────────────────
+# ── Preview text ────────────────────────────────────────────────────
 
-def _escape(text: str) -> str:
-    return text.replace("\\", "\\\\")
+def _build_preview(tool_name: str, description: str, inp: dict) -> str:
+    """Build human-readable preview text for the zenity dialog."""
+    lines = []
 
+    # Title line
+    lines.append(f"{tool_name} - 需要确认权限")
+    lines.append("")
 
-def show_notify(tool_name: str, description: str, details: str) -> str | None:
-    display = tool_name
+    # Description
     if description:
-        display = f"{tool_name}: {description}"
-    if len(display) > 200:
-        display = display[:197] + "..."
+        desc = description.strip()
+        if len(desc) > 120:
+            desc = desc[:117] + "..."
+        lines.append(f"描述：{desc}")
+        lines.append("")
 
-    body = details if details else "(no details)"
-    if len(body) > 400:
-        body = body[:397] + "..."
+    # Command / file preview
+    preview = _extract_preview(tool_name, inp)
+    if preview:
+        lines.append("预览：")
+        # Truncate and word-wrap
+        wrapped = textwrap.fill(preview, width=65, max_lines=6,
+                                placeholder="...", break_long_words=False)
+        for wline in wrapped.splitlines():
+            lines.append(f"  {wline}")
 
-    text = f"{display}\n\n{body}"
+    lines.append("")
+    lines.append("请选择操作：")
+
+    return "\n".join(lines)
+
+
+def _extract_preview(tool_name: str, inp: dict) -> str:
+    """Extract a meaningful preview string from tool input."""
+    if not inp:
+        return ""
+
+    tool_name_lower = tool_name.lower()
+
+    # Bash: show the command
+    if tool_name_lower == "bash":
+        cmd = inp.get("command", "")
+        return cmd.strip() if cmd else ""
+
+    # Edit / Write / MultiEdit: show file path + first diff
+    if tool_name_lower in ("edit", "write", "multiedit"):
+        file_path = inp.get("file_path", inp.get("filePath", ""))
+        if file_path:
+            return f"文件: {file_path}"
+        return ""
+
+    # Read: show file path
+    if tool_name_lower == "read":
+        file_path = inp.get("file_path", inp.get("filePath", ""))
+        if file_path:
+            return f"文件: {file_path}"
+        return ""
+
+    # Generic: serialize the input
+    return json.dumps(inp, indent=2, ensure_ascii=False)
+
+
+# ── Zenity dialog ───────────────────────────────────────────────────
+
+OPTION_ALLOW_ONCE = "允许本次"
+OPTION_ALWAYS = "始终允许"
+OPTION_DENY = "拒绝"
+
+
+def show_notify(preview_text: str, has_suggestions: bool) -> str | None:
+    """
+    Pop up a zenity radiolist dialog with three options.
+    Returns one of the OPTION_* constants, or None if cancelled.
+    """
+    options = [OPTION_ALLOW_ONCE, OPTION_DENY]
+    if has_suggestions:
+        options.insert(1, OPTION_ALWAYS)  # 始终允许 放中间
+
+    # Build zenity args
+    # Format: --list --radiolist with columns
+    args = [
+        "zenity",
+        "--list", "--radiolist",
+        "--title=cc-notify",
+        f"--text={preview_text}",
+        "--column=", "--column=操作",
+        "--width=600", "--height=380",
+        "--ok-label=确认",
+        "--cancel-label=关闭",
+        "--hide-column=1",
+        "--print-column=2",
+        "--no-markup",
+    ]
+
+    # Add options. First one (允许本次) is pre-selected (TRUE).
+    for i, opt in enumerate(options):
+        selected = "TRUE" if i == 0 else "FALSE"
+        args.append(selected)
+        args.append(opt)
 
     try:
         proc = subprocess.run(
-            [
-                "zenity",
-                "--question",
-                "--title=cc-notify — Permission Request",
-                f"--text={_escape(text)}",
-                "--ok-label=Allow",
-                "--cancel-label=Deny",
-                "--width=500",
-                "--no-markup",
-            ],
+            args,
+            capture_output=True,
+            text=True,
             timeout=300,
         )
         if proc.returncode == 0:
-            return "allow"
-        elif proc.returncode == 1:
-            return "deny"
+            choice = proc.stdout.strip()
+            if choice in (OPTION_ALLOW_ONCE, OPTION_ALWAYS, OPTION_DENY):
+                return choice
     except (subprocess.TimeoutExpired, FileNotFoundError):
         pass
     return None
@@ -81,7 +160,6 @@ def show_notify(tool_name: str, description: str, details: str) -> str | None:
 # ── Main proxy loop ────────────────────────────────────────────────
 
 def main():
-
     if len(sys.argv) < 2:
         print("Usage: wrapper.py <real-binary> [args...]", file=sys.stderr)
         sys.exit(1)
@@ -89,7 +167,6 @@ def main():
     real_binary = sys.argv[1]
     args = sys.argv[2:]
     config = load_config()
-
 
     child = subprocess.Popen(
         [real_binary] + args,
@@ -118,21 +195,25 @@ def main():
     # Notification state
     notify_lock = threading.Lock()
     pending_request: dict | None = None
-    pending_result: str | None = None
+    pending_choice: str | None = None
     notify_done = threading.Event()
     notify_done.set()
 
     intercepted_ids: set = set()
 
     def _notify_worker(req_msg: dict):
-        nonlocal pending_result
-        tool_name = req_msg.get("request", {}).get("tool_name", "?")
-        description = req_msg.get("request", {}).get("description", "")
-        inp = req_msg.get("request", {}).get("input", {})
-        details = json.dumps(inp, indent=2) if inp else ""
-        outcome = show_notify(tool_name, description, details)
+        nonlocal pending_choice
+        req = req_msg.get("request", {})
+        tool_name = req.get("tool_name", "?")
+        description = req.get("description", "")
+        inp = req.get("input", {})
+        suggestions = req.get("permission_suggestions", [])
+
+        preview = _build_preview(tool_name, description, inp)
+        choice = show_notify(preview, bool(suggestions))
+
         with notify_lock:
-            pending_result = outcome
+            pending_choice = choice
             notify_done.set()
 
     out_buf = b""
@@ -190,9 +271,7 @@ def main():
                             req = msg.get("request", {})
                             if req.get("subtype") == "can_use_tool":
                                 request_id = msg.get("request_id", "")
-                                tool_name = req.get("tool_name", "?")
                                 inp = req.get("input", {})
-
 
                                 # Dedup
                                 h = hash(json.dumps(inp, sort_keys=True))
@@ -208,7 +287,7 @@ def main():
                                 intercepted_ids.add(request_id)
                                 with notify_lock:
                                     pending_request = msg
-                                    pending_result = None
+                                    pending_choice = None
                                 notify_done.clear()
                                 threading.Thread(
                                     target=_notify_worker,
@@ -246,23 +325,33 @@ def main():
         # ── Handle notification result ──
         if notify_done.is_set():
             with notify_lock:
-                result = pending_result
+                choice = pending_choice
                 req = pending_request
-                pending_result = None
+                pending_choice = None
                 pending_request = None
 
             if req is not None:
                 request_id = req.get("request_id", "")
-                if result in ("allow", "deny"):
+
+                if choice in (OPTION_ALLOW_ONCE, OPTION_ALWAYS, OPTION_DENY):
+                    behavior = "deny" if choice == OPTION_DENY else "allow"
+                    updated_permissions = []
+
+                    # 始终允许：附带 permission_suggestions 持久化规则
+                    if choice == OPTION_ALWAYS:
+                        updated_permissions = req.get("request", {}).get(
+                            "permission_suggestions", []
+                        )
+
                     response = {
                         "type": "control_response",
                         "response": {
                             "subtype": "success",
                             "request_id": request_id,
                             "response": {
-                                "behavior": result,
+                                "behavior": behavior,
                                 "updatedInput": {},
-                                "updatedPermissions": [],
+                                "updatedPermissions": updated_permissions,
                             },
                         },
                     }
@@ -272,7 +361,7 @@ def main():
                     except OSError:
                         pass
                 else:
-                    # User closed zenity → forward blocked msg to extension
+                    # User closed window → forward blocked msg to extension
                     try:
                         os.write(stdout_fd, json.dumps(req, separators=(",", "")).encode())
                         os.write(stdout_fd, b"\n")
@@ -289,7 +378,6 @@ def main():
                 os.write(out_fd, data)
             except OSError:
                 break
-
 
     if child.poll() is None:
         try:
