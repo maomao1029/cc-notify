@@ -334,12 +334,14 @@ def main():
                 request_id = req.get("request_id", "")
 
                 if choice in (OPTION_ALLOW_ONCE, OPTION_ALWAYS, OPTION_DENY):
+                    req_body = req.get("request", {})
                     behavior = "deny" if choice == OPTION_DENY else "allow"
                     updated_permissions = []
+                    tool_use_id = req_body.get("tool_use_id", "")
 
                     # 始终允许：附带 permission_suggestions 持久化规则
                     if choice == OPTION_ALWAYS:
-                        updated_permissions = req.get("request", {}).get(
+                        updated_permissions = req_body.get(
                             "permission_suggestions", []
                         )
 
@@ -350,8 +352,9 @@ def main():
                             "request_id": request_id,
                             "response": {
                                 "behavior": behavior,
-                                "updatedInput": {},
+                                "updatedInput": req_body.get("input", {}),
                                 "updatedPermissions": updated_permissions,
+                                "toolUseID": tool_use_id,
                             },
                         },
                     }
