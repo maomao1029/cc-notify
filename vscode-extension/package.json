@@ -1,0 +1,56 @@
+{
+  "name": "cc-notify",
+  "displayName": "cc-notify — Claude Code 桌面通知",
+  "description": "Claude Code 确认弹窗通知，切屏不误事。自动拦截权限请求并弹出桌面三按钮对话框。",
+  "version": "1.0.0",
+  "publisher": "maomao1029",
+  "license": "MIT",
+  "icon": "icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/maomao1029/cc-notify"
+  },
+  "engines": {
+    "vscode": "^1.70.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "claude",
+    "claude-code",
+    "notification",
+    "desktop",
+    "productivity"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "cc-notify.deploy",
+        "title": "cc-notify: 部署包装器"
+      },
+      {
+        "command": "cc-notify.remove",
+        "title": "cc-notify: 移除包装器"
+      },
+      {
+        "command": "cc-notify.status",
+        "title": "cc-notify: 查看部署状态"
+      }
+    ],
+    "configuration": {
+      "title": "cc-notify",
+      "properties": {
+        "cc-notify.cooldownSeconds": {
+          "type": "number",
+          "default": 10,
+          "description": "同一操作的去重冷却秒数"
+        }
+      }
+    }
+  }
+}
