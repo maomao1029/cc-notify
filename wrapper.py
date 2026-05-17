@@ -2,10 +2,8 @@
 """
 cc-notify wrapper - 代理 VS Code 扩展与 Claude 之间的 JSON 通信。
 
-拦截 can_use_tool 确认请求，弹出 zenity 三选一对话框：
-  - 允许本次 (Allow once)
-  - 始终允许 (Always allow)
-  - 拒绝 (Deny)
+拦截 can_use_tool 确认请求，弹出原生 GTK3 三按钮对话框。
+仅响应鼠标点击，键盘输入不会误触。
 
 用法（由包装器脚本自动调用）:
     wrapper.py <claude-real-binary-path> [args...]
@@ -20,6 +18,10 @@ import textwrap
 import threading
 import time
 from pathlib import Path
+
+import gi
+gi.require_version("Gtk", "3.0")
+from gi.repository import Gtk  # noqa: E402
 
 # ── Config ──────────────────────────────────────────────────────────
 
@@ -41,7 +43,7 @@ def load_config():
 
 # ── Preview text ────────────────────────────────────────────────────
 
-# (internal helper — see _build_preview)
+# (internal helper — see _build_preview above)
 
 def _build_preview(tool_name: str, description: str, inp: dict) -> str:
     """Build human-readable preview text for the zenity dialog."""
@@ -105,7 +107,7 @@ def _extract_preview(tool_name: str, inp: dict) -> str:
     return json.dumps(inp, indent=2, ensure_ascii=False)
 
 
-# ── Zenity dialog ───────────────────────────────────────────────────
+# ── GTK3 notification dialog ────────────────────────────────────────
 
 OPTION_ALLOW_ONCE = "允许本次"
 OPTION_ALWAYS = "始终允许"
@@ -114,46 +116,81 @@ OPTION_DENY = "拒绝"
 
 def show_notify(preview_text: str, has_suggestions: bool) -> str | None:
     """
-    Pop up a zenity question dialog with three custom buttons:
-      [允许本次] [始终允许] [拒绝]
-    Default button is "允许本次" (OK, return code 0).
+    Native GTK3 dialog with three buttons. Only mouse clicks are accepted;
+    keyboard input does NOT trigger any button.
 
-    Returns one of the OPTION_* constants, or None if closed.
+    Returns one of the OPTION_* constants, or None if the window is closed.
     """
-    # Build args: --question with three labelled buttons
-    args = [
-        "zenity",
-        "--question",
-        "--title=cc-notify",
-        f"--text={preview_text}",
-        "--ok-label=允许本次",
-        "--cancel-label=拒绝",
-        "--width=600",
-        "--no-markup",
-    ]
-    if has_suggestions:
-        args.append("--extra-button=始终允许")
 
-    try:
-        proc = subprocess.run(
-            args,
-            capture_output=True,
-            text=True,
-            timeout=300,
-        )
-        rc = proc.returncode
-        extra = proc.stdout.strip()
+    class _Dialog(Gtk.Window):
+        def __init__(self):
+            super().__init__(title="cc-notify")
+            self.set_position(Gtk.WindowPosition.CENTER)
+            self.set_keep_above(True)
+            self.result = None
 
-        if rc == 0:
-            return OPTION_ALLOW_ONCE
-        elif extra == OPTION_ALWAYS:
-            return OPTION_ALWAYS
-        else:
-            # Cancel button (拒绝) or window closed
-            return OPTION_DENY
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        pass
-    return None
+            vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+            self.add(vbox)
+
+            # Preview text
+            label = Gtk.Label(
+                label=preview_text,
+                xalign=0,
+                yalign=0,
+                margin=16,
+                selectable=True,
+            )
+            vbox.pack_start(label, True, True, 0)
+
+            # Separator
+            sep = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+            vbox.pack_start(sep, False, False, 0)
+
+            # Button row
+            btn_box = Gtk.ButtonBox()
+            btn_box.set_layout(Gtk.ButtonBoxStyle.EXPAND)
+            btn_box.set_spacing(8)
+            btn_box.set_margin_top(10)
+            btn_box.set_margin_bottom(10)
+            btn_box.set_margin_start(12)
+            btn_box.set_margin_end(12)
+            btn_box.set_homogeneous(True)
+
+            # "允许本次" — suggested (blue)
+            btn_allow = Gtk.Button(label="允许本次")
+            btn_allow.get_style_context().add_class("suggested-action")
+            btn_allow.connect("clicked", lambda w: self._choose(OPTION_ALLOW_ONCE))
+            btn_box.pack_start(btn_allow, True, True, 0)
+
+            # "始终允许" — normal
+            if has_suggestions:
+                btn_always = Gtk.Button(label="始终允许")
+                btn_always.connect("clicked", lambda w: self._choose(OPTION_ALWAYS))
+                btn_box.pack_start(btn_always, True, True, 0)
+
+            # "拒绝" — subtle destructive
+            btn_deny = Gtk.Button(label="拒绝")
+            btn_deny.get_style_context().add_class("destructive-action")
+            btn_deny.connect("clicked", lambda w: self._choose(OPTION_DENY))
+            btn_box.pack_start(btn_deny, True, True, 0)
+
+            vbox.pack_start(btn_box, False, False, 0)
+
+            self.connect("destroy", self._on_destroy)
+            self.show_all()
+
+        def _choose(self, value):
+            self.result = value
+            self.destroy()
+
+        def _on_destroy(self, _widget):
+            if self.result is None:
+                self.result = None  # window closed via X button
+            Gtk.main_quit()
+
+    dlg = _Dialog()
+    Gtk.main()
+    return dlg.result
 
 
 # ── Main proxy loop ────────────────────────────────────────────────
