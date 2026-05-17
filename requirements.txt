@@ -1,0 +1,5 @@
+# cc-notify has no third-party Python dependencies.
+# It only uses the Python standard library.
+#
+# System dependency (Ubuntu/Debian):
+#   sudo apt install zenity

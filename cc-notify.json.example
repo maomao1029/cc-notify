@@ -1,0 +1,17 @@
+{
+    "patterns": [
+        "Y/n",
+        "y/N",
+        "yes/no",
+        "Yes/No",
+        "YES/NO",
+        "Confirm",
+        "Proceed",
+        "Allow",
+        "Apply changes",
+        "确认",
+        "是否继续"
+    ],
+    "ignore_patterns": [],
+    "cooldown_seconds": 10
+}
