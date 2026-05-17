@@ -138,7 +138,7 @@ def show_notify(preview_text: str, has_suggestions: bool) -> str | None:
                 xalign=0,
                 yalign=0,
                 margin=16,
-                selectable=True,
+                can_focus=False,
             )
             vbox.pack_start(label, True, True, 0)
 
